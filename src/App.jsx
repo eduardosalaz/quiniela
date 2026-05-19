@@ -59,7 +59,13 @@ function MagicLinkSent({ email }) {
         <h1 style={{ fontFamily: "Teko", fontSize: 36, color: gold, letterSpacing: 2, marginBottom: 16 }}>REVISA TU CORREO</h1>
         <p style={{ color: txt, fontSize: 14, marginBottom: 8 }}>Mandamos un enlace a</p>
         <p style={{ color: gold, fontSize: 14, fontWeight: 600, marginBottom: 16, wordBreak: "break-all" }}>{email}</p>
-        <p style={{ color: mut, fontSize: 12 }}>Haz clic en el enlace desde el mismo dispositivo para entrar.</p>
+        <p style={{ color: mut, fontSize: 12, marginBottom: 16 }}>Haz clic en el enlace desde el mismo dispositivo para entrar.</p>
+        <div style={{ padding: 12, background: goldDim, border: `1px solid ${gold}`, borderRadius: 8, textAlign: "left" }}>
+          <p style={{ color: gold, fontSize: 10, fontWeight: 700, marginBottom: 6, letterSpacing: .5 }}>EN MÓVIL</p>
+          <p style={{ color: txt, fontSize: 11, lineHeight: 1.5 }}>
+            Si el enlace abre dentro de tu app de correo (Gmail, Outlook), copia la URL y pégala en Chrome o Safari. Los navegadores dentro de esas apps no guardan la sesión.
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -343,10 +349,15 @@ export default function App() {
   const [showPin, setShowPin] = useState(false);
   const [pinInput, setPinInput] = useState("");
   const [exportModal, setExportModal] = useState(null);
+  const flashTimerRef = useRef(null);
 
   function flash(t, isErr = false) {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     setToast(t); setToastErr(isErr);
-    setTimeout(() => { setToast(null); setToastErr(false); }, 2500);
+    flashTimerRef.current = setTimeout(() => {
+      setToast(null); setToastErr(false);
+      flashTimerRef.current = null;
+    }, 2500);
   }
 
   // Returns the current user's display name if currentAuthUserId is supplied
@@ -450,9 +461,8 @@ export default function App() {
   }
 
   async function predict(matchId, pick) {
-    const upd = { ...myPreds, [matchId]: pick };
-    setMyPreds(upd);
-    setAllPreds(prev => ({ ...prev, [me]: upd }));
+    setMyPreds(prev => ({ ...prev, [matchId]: pick }));
+    setAllPreds(prev => ({ ...prev, [me]: { ...(prev[me] || {}), [matchId]: pick } }));
     const { error } = await supabase.from("predictions").upsert(
       { player_id: authUser.id, match_id: matchId, pick },
       { onConflict: "player_id,match_id" }
@@ -461,16 +471,14 @@ export default function App() {
   }
 
   async function submitResult(matchId, hs, as) {
-    const upd = { ...results, [matchId]: { homeScore: hs, awayScore: as } };
-    setResults(upd);
+    setResults(prev => ({ ...prev, [matchId]: { homeScore: hs, awayScore: as } }));
     const { error } = await supabase.from("results").upsert({ match_id: matchId, home_score: hs, away_score: as });
     if (error) flash("Error: " + error.message, true);
     else flash("Resultado guardado");
   }
 
   async function removeResult(matchId) {
-    const upd = { ...results }; delete upd[matchId];
-    setResults(upd);
+    setResults(prev => { const u = { ...prev }; delete u[matchId]; return u; });
     const { error } = await supabase.from("results").delete().eq("match_id", matchId);
     if (error) flash("Error: " + error.message, true);
     else flash("Resultado eliminado");
@@ -628,34 +636,45 @@ export default function App() {
   // ── Export ────────────────────────────────────────────────────
   function showExport(title, content, filename) { setExportModal({ title, content, filename }); }
 
+  // RFC 4180 CSV escape — wrap in quotes if value contains comma, quote, or newline; double internal quotes.
+  function csvCell(val) {
+    const s = String(val ?? "");
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+  function csvRow(cells) { return cells.map(csvCell).join(","); }
+
   function exportLeaderboard() {
     const lb = leaderboard();
-    let csv = "Pos,Nombre,Puntos,Correctas,Total,Precisión %\n";
+    const rows = [["Pos", "Nombre", "Puntos", "Correctas", "Total", "Precisión %"]];
     lb.forEach((row, i) => {
-      csv += `${i + 1},${row.name},${row.pts},${row.correct},${row.total},${row.total > 0 ? Math.round(100 * row.correct / row.total) : 0}\n`;
+      rows.push([
+        i + 1, row.name, row.pts, row.correct, row.total,
+        row.total > 0 ? Math.round(100 * row.correct / row.total) : 0,
+      ]);
     });
+    const csv = rows.map(csvRow).join("\n") + "\n";
     showExport("Tabla de Posiciones", csv, `quiniela-leaderboard-${new Date().toISOString().slice(0, 10)}.csv`);
   }
 
   function exportAllPicks() {
     const decidedMatches = allMatches.filter(m => results[m.id]);
-    let csv = "Partido,Fecha,Local,Visitante,Marcador,Resultado," + users.join(",") + "\n";
+    const rows = [["Partido", "Fecha", "Local", "Visitante", "Marcador", "Resultado", ...users]];
     decidedMatches.forEach(m => {
       const r = results[m.id];
       const res = oc(r.homeScore, r.awayScore);
       const resLabel = res === "home" ? m.home : res === "away" ? m.away : "Empate";
-      let row = `${m.id},${dk(m.date)},${m.home},${m.away},${r.homeScore}-${r.awayScore},${resLabel}`;
+      const row = [m.id, dk(m.date), m.home, m.away, `${r.homeScore}-${r.awayScore}`, resLabel];
       users.forEach(u => {
         const pred = allPreds[u]?.[m.id];
-        if (!pred) { row += ",--"; }
+        if (!pred) { row.push("--"); }
         else {
           const label = pred === "home" ? m.home : pred === "away" ? m.away : "Empate";
-          const mark = pred === res ? " [OK]" : " [X]";
-          row += `,${label}${mark}`;
+          row.push(label + (pred === res ? " [OK]" : " [X]"));
         }
       });
-      csv += row + "\n";
+      rows.push(row);
     });
+    const csv = rows.map(csvRow).join("\n") + "\n";
     showExport("Predicciones", csv, `quiniela-all-picks-${new Date().toISOString().slice(0, 10)}.csv`);
   }
 
@@ -955,10 +974,13 @@ export default function App() {
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${cardB}` }}>
                       <span style={{ fontSize: 13, color: txt }}>{fr.home} {fr.homeScore} - {fr.awayScore} {fr.away}</span>
                       <button onClick={() => {
-                        const match = allMatches.find(m =>
-                          (m.home.includes(fr.home) || fr.home.includes(m.home)) &&
-                          (m.away.includes(fr.away) || fr.away.includes(m.away))
-                        );
+                        const match = (fr.home && fr.away)
+                          ? allMatches.find(m =>
+                              dk(m.date) === lastFetchDate &&
+                              (m.home.includes(fr.home) || fr.home.includes(m.home)) &&
+                              (m.away.includes(fr.away) || fr.away.includes(m.away))
+                            )
+                          : null;
                         if (match) submitResult(match.id, fr.homeScore, fr.awayScore);
                         else flash("No se encontró el partido", true);
                       }} style={{ padding: "4px 10px", borderRadius: 6, border: "none", background: grn, color: "#000", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
