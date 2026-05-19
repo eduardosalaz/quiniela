@@ -1,4 +1,4 @@
-# Quiniela Mundial 2026
+# Quiniela Mundial 2026.
 
 World Cup 2026 prediction pool. React + Vite frontend, Supabase backend (Postgres + magic-link auth + Edge Function), deployed on Cloudflare Pages.
 
