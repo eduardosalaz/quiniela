@@ -349,12 +349,10 @@ export default function App() {
     setTimeout(() => { setToast(null); setToastErr(false); }, 2500);
   }
 
-  // ── Data load ─────────────────────────────────────────────────
   // Returns the current user's display name if currentAuthUserId is supplied
   // (derived from the players row matching that auth id) so callers don't need
   // a separate query.
   async function loadAll(currentAuthUserId = null) {
-    const t0 = performance.now();
     const [playersRes, resultsRes, knockoutsRes, predsRes, configRes] = await Promise.all([
       supabase.from("players").select("id, name"),
       supabase.from("results").select("match_id, home_score, away_score"),
@@ -362,7 +360,6 @@ export default function App() {
       supabase.from("predictions").select("player_id, match_id, pick"),
       supabase.from("config").select("key, value").eq("key", "admin_pin").maybeSingle(),
     ]);
-    console.log(`[loadAll] queries done in ${Math.round(performance.now() - t0)}ms`);
 
     for (const [name, res] of [
       ["players", playersRes], ["results", resultsRes], ["knockouts", knockoutsRes],
@@ -404,40 +401,28 @@ export default function App() {
     let mounted = true;
 
     async function bootstrap(session) {
-      console.log("[bootstrap] start, hasSession=", !!session);
       try {
-        if (!mounted) { console.log("[bootstrap] unmounted, abort"); return; }
+        if (!mounted) return;
         if (!session) {
           setAuthUser(null);
           setMe(null);
           return;
         }
         setAuthUser(session.user);
-        console.log("[bootstrap] calling loadAll...");
         const myName = await loadAll(session.user.id);
-        console.log("[bootstrap] loadAll done, myName=", myName);
         if (mounted) setMe(myName);
       } catch (e) {
-        console.error("bootstrap fatal error:", e);
+        console.error("bootstrap error:", e);
       } finally {
-        console.log("[bootstrap] finally, mounted=", mounted);
         if (mounted) setLoading(false);
       }
     }
 
-    // Escape hatch: if anything hangs for more than 5s, render the app anyway.
-    const escapeHatch = setTimeout(() => {
-      if (mounted) {
-        console.warn("[bootstrap] 5s escape hatch fired — forcing loading=false");
-        setLoading(false);
-      }
-    }, 5000);
-
     supabase.auth.getSession()
       .then(({ data }) => bootstrap(data.session))
-      .catch(e => { console.error("[bootstrap] getSession failed:", e); if (mounted) setLoading(false); });
+      .catch(e => { console.error("getSession failed:", e); if (mounted) setLoading(false); });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => bootstrap(session));
-    return () => { mounted = false; clearTimeout(escapeHatch); sub.subscription.unsubscribe(); };
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
   }, []);
 
   // ── Refresh every 30s ─────────────────────────────────────────
