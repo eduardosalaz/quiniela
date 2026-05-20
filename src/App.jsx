@@ -429,9 +429,9 @@ export default function App() {
       }
     }
 
-    supabase.auth.getSession()
-      .then(({ data }) => bootstrap(data.session))
-      .catch(e => { console.error("getSession failed:", e); if (mounted) setLoading(false); });
+    // Subscribing fires INITIAL_SESSION immediately with the current session,
+    // so we don't need a separate getSession() — and having both was racing
+    // two bootstrap() calls in parallel, wedging loadAll on first load.
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => bootstrap(session));
     return () => { mounted = false; sub.subscription.unsubscribe(); };
   }, []);
