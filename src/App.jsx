@@ -410,30 +410,72 @@ export default function App() {
   // ── Auth bootstrap ────────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
+    let initialized = false;
+    let bootstrapInflight = Promise.resolve();
 
-    async function bootstrap(session) {
-      try {
+    // Serializes bootstraps so a refresh/sign-in event during init can't
+    // race the initial loadAll().
+    function runBootstrap(session, label) {
+      const next = bootstrapInflight.then(async () => {
         if (!mounted) return;
-        if (!session) {
-          setAuthUser(null);
-          setMe(null);
-          return;
+        console.log(`[bootstrap:${label}] start, hasSession=`, !!session);
+        try {
+          if (!session) {
+            setAuthUser(null);
+            setMe(null);
+            return;
+          }
+          setAuthUser(session.user);
+          const myName = await loadAll(session.user.id);
+          console.log(`[bootstrap:${label}] loadAll done, myName=`, myName);
+          if (mounted) setMe(myName);
+        } catch (e) {
+          console.error(`[bootstrap:${label}] error:`, e);
+        } finally {
+          if (mounted) setLoading(false);
         }
-        setAuthUser(session.user);
-        const myName = await loadAll(session.user.id);
-        if (mounted) setMe(myName);
-      } catch (e) {
-        console.error("bootstrap error:", e);
-      } finally {
-        if (mounted) setLoading(false);
-      }
+      });
+      bootstrapInflight = next.catch(() => {});
+      return next;
     }
 
-    // Subscribing fires INITIAL_SESSION immediately with the current session,
-    // so we don't need a separate getSession() — and having both was racing
-    // two bootstrap() calls in parallel, wedging loadAll on first load.
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => bootstrap(session));
-    return () => { mounted = false; sub.subscription.unsubscribe(); };
+    // Safety net: if everything below stalls (network, hung promise), don't
+    // wedge the UI forever — drop the spinner so the user sees the login or
+    // the offline-ish state and can take action.
+    const escapeHatch = setTimeout(() => {
+      if (mounted && loading) {
+        console.warn("[bootstrap] 8s escape hatch fired");
+        setLoading(false);
+      }
+    }, 8000);
+
+    (async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) console.error("[bootstrap] getSession error:", error);
+        if (!mounted) return;
+        await runBootstrap(data?.session ?? null, "initial");
+      } catch (e) {
+        console.error("[bootstrap] init threw:", e);
+        if (mounted) setLoading(false);
+      } finally {
+        initialized = true;
+      }
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      // Ignore noisy events that fire during initial hydration.
+      if (!initialized) return;
+      if (event === "TOKEN_REFRESHED" || event === "INITIAL_SESSION") return;
+      runBootstrap(session, event);
+    });
+
+    return () => {
+      mounted = false;
+      clearTimeout(escapeHatch);
+      sub.subscription.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Refresh every 30s ─────────────────────────────────────────
